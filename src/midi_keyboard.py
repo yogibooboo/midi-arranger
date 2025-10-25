@@ -6,8 +6,33 @@ import threading
 class VirtualKeyboard:
     def __init__(self, root):
         self.root = root
-        self.root.title("MIDI Virtual Keyboard")
-        self.root.geometry("1200x400")
+        self.root.title("MIDI Virtual Keyboard - 88 Keys")
+
+        # Rileva dimensioni dello schermo
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Calcola larghezza finestra (90% dello schermo, max 2400px)
+        window_width = min(int(screen_width * 0.9), 2400)
+
+        # Calcola altezza basata sulle proporzioni dei tasti del pianoforte
+        # Un pianoforte ha 52 tasti bianchi, rapporto lunghezza:larghezza = 6.5:1
+        # Quindi: larghezza_tasto = window_width / 52
+        #         altezza_tasto = larghezza_tasto * 6.5
+        # Aggiungiamo spazio per controlli (70px) e scrollbar (30px)
+        white_key_width = window_width / 52
+        keyboard_height = int(white_key_width * 6.5)  # Proporzione realistica
+        window_height = keyboard_height + 100  # +100px per controlli e scrollbar
+
+        # Limita altezza allo schermo disponibile (max 80% altezza schermo)
+        max_height = int(screen_height * 0.8)
+        window_height = min(window_height, max_height)
+
+        # Centra la finestra sullo schermo
+        x_position = (screen_width - window_width) // 2
+        y_position = (screen_height - window_height) // 2
+
+        self.root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
         
         # Variabili
         self.midi_input = None
@@ -40,13 +65,26 @@ class VirtualKeyboard:
         self.status_label = ttk.Label(control_frame, text="Non connesso", foreground="red")
         self.status_label.pack(side=tk.LEFT, padx=20)
         
-        # Frame per la tastiera
+        # Frame per la tastiera con scrollbar
         keyboard_frame = ttk.Frame(self.root, padding="10")
         keyboard_frame.pack(fill=tk.BOTH, expand=True)
-        
+
+        # Scrollbar orizzontale
+        h_scrollbar = ttk.Scrollbar(keyboard_frame, orient=tk.HORIZONTAL)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
         # Canvas per la tastiera
-        self.canvas = tk.Canvas(keyboard_frame, bg="white", highlightthickness=1, highlightbackground="gray")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(
+            keyboard_frame,
+            bg="white",
+            highlightthickness=1,
+            highlightbackground="gray",
+            xscrollcommand=h_scrollbar.set
+        )
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Configura scrollbar
+        h_scrollbar.config(command=self.canvas.xview)
         
         # Disegna la tastiera
         self.draw_keyboard()
@@ -65,72 +103,93 @@ class VirtualKeyboard:
             self.midi_combo.current(0)
     
     def draw_keyboard(self):
-        """Disegna la tastiera virtuale (3 ottave, da C3 a B5)"""
+        """Disegna la tastiera virtuale (88 tasti, da A0 a C8)"""
         self.canvas.delete("all")
-        
+
         # Dimensioni
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
-        
+
         if width <= 1:
-            width = 1180
+            width = 2360  # Larghezza per 88 tasti
         if height <= 1:
             height = 300
-        
-        # Configurazione tastiera: 3 ottave (36 tasti)
-        self.start_note = 48  # C3
-        self.num_octaves = 3
-        self.white_keys_per_octave = 7
-        total_white_keys = self.white_keys_per_octave * self.num_octaves
-        
+
+        # Configurazione tastiera: 88 tasti completi del pianoforte
+        # Pianoforte standard: A0 (MIDI 21) a C8 (MIDI 108)
+        self.start_note = 21  # A0 (primo tasto del pianoforte)
+        self.end_note = 108    # C8 (ultimo tasto del pianoforte)
+        self.total_notes = self.end_note - self.start_note + 1  # 88 tasti
+
+        # Calcola quanti tasti bianchi ci sono in totale (52 per un pianoforte da 88 tasti)
+        # A0-B0 (3 tasti: A, A#, B) + 7 ottave complete (C1-B7) + C8 (1 tasto)
+        # Tasti bianchi: A0, B0 (2) + 7 ottave * 7 bianchi (49) + C8 (1) = 52
+        total_white_keys = 52
+
         self.white_key_width = width / total_white_keys
         self.white_key_height = height - 20
         self.black_key_width = self.white_key_width * 0.6
         self.black_key_height = self.white_key_height * 0.6
-        
+
         # Mappa note (0=C, 1=C#, 2=D, etc.)
         self.key_positions = {}
-        
-        # Pattern tasti bianchi e neri per ottava
-        white_notes = [0, 2, 4, 5, 7, 9, 11]  # C, D, E, F, G, A, B
-        black_notes = [1, 3, 6, 8, 10]  # C#, D#, F#, G#, A#
-        black_positions = [0.7, 1.7, 3.7, 4.7, 5.7]  # Posizioni relative dei tasti neri
-        
-        # Disegna tasti bianchi
+
+        # Disegna tutti i tasti (sia bianchi che neri)
+        # Prima disegniamo i tasti bianchi, poi i neri (così i neri vanno sopra)
+
         white_key_index = 0
-        for octave in range(self.num_octaves):
-            for white_note in white_notes:
-                note_number = self.start_note + octave * 12 + white_note
+
+        # Disegna tasti bianchi
+        for note_number in range(self.start_note, self.end_note + 1):
+            note_in_octave = note_number % 12
+            # Verifica se è un tasto bianco (nota senza #)
+            # Note bianche: 0=C, 2=D, 4=E, 5=F, 7=G, 9=A, 11=B
+            is_white = note_in_octave in [0, 2, 4, 5, 7, 9, 11]
+
+            if is_white:
                 x = white_key_index * self.white_key_width
-                
+
                 rect = self.canvas.create_rectangle(
                     x, 10, x + self.white_key_width, 10 + self.white_key_height,
                     fill="white", outline="black", width=2, tags=f"note_{note_number}"
                 )
-                
-                # Etichetta nota
+
+                # Etichetta nota (solo per C e F per non affollare)
                 note_name = self.get_note_name(note_number)
-                self.canvas.create_text(
-                    x + self.white_key_width / 2, 10 + self.white_key_height - 20,
-                    text=note_name, font=("Arial", 9), tags=f"note_{note_number}_text"
-                )
-                
+                if note_in_octave in [0, 5]:  # Solo C e F
+                    self.canvas.create_text(
+                        x + self.white_key_width / 2, 10 + self.white_key_height - 15,
+                        text=note_name, font=("Arial", 7), tags=f"note_{note_number}_text"
+                    )
+
                 self.key_positions[note_number] = rect
                 white_key_index += 1
-        
-        # Disegna tasti neri
-        for octave in range(self.num_octaves):
-            for i, black_note in enumerate(black_notes):
-                note_number = self.start_note + octave * 12 + black_note
-                x = (octave * self.white_keys_per_octave + black_positions[i]) * self.white_key_width
-                
+
+        # Disegna tasti neri (sopra i bianchi)
+        white_key_index = 0
+        for note_number in range(self.start_note, self.end_note + 1):
+            note_in_octave = note_number % 12
+            is_white = note_in_octave in [0, 2, 4, 5, 7, 9, 11]
+
+            if is_white:
+                white_key_index += 1
+            else:
+                # Tasto nero - posizionalo tra i tasti bianchi
+                # I tasti neri sono posizionati con un offset di 0.7 dal tasto bianco precedente
+                x = (white_key_index - 0.3) * self.white_key_width
+
                 rect = self.canvas.create_rectangle(
                     x, 10, x + self.black_key_width, 10 + self.black_key_height,
                     fill="black", outline="black", width=2, tags=f"note_{note_number}"
                 )
-                
+
                 self.key_positions[note_number] = rect
-    
+
+        # Configura la scroll region per permettere lo scorrimento
+        # La larghezza totale è data dal numero di tasti bianchi * larghezza del tasto
+        total_width = 52 * self.white_key_width
+        self.canvas.configure(scrollregion=(0, 0, total_width, self.white_key_height + 20))
+
     def get_note_name(self, note_number):
         """Restituisce il nome della nota con l'ottava"""
         notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -229,11 +288,18 @@ class VirtualKeyboard:
 def main():
     root = tk.Tk()
     app = VirtualKeyboard(root)
-    
+
     # Ridisegna la tastiera quando la finestra viene ridimensionata
+    # Questo permette alla tastiera di adattarsi automaticamente
+    resize_timer = None
+
     def on_resize(event):
-        app.draw_keyboard()
-    
+        nonlocal resize_timer
+        # Evita di ridisegnare troppo frequentemente (debouncing)
+        if resize_timer is not None:
+            root.after_cancel(resize_timer)
+        resize_timer = root.after(100, app.draw_keyboard)
+
     root.bind('<Configure>', on_resize)
     root.mainloop()
 

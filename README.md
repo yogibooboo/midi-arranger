@@ -60,12 +60,17 @@ python src/midi_keyboard.py
 
 Il visualizzatore offre:
 - **Interfaccia grafica** con tastiera virtuale (tkinter)
+- **88 tasti completi** come un pianoforte reale (da A0 a C8)
+- **Proporzioni realistiche** - rapporto 6.5:1 come un pianoforte vero
+- **Adattamento automatico** alle dimensioni dello schermo (90% larghezza)
+- **Scrollbar orizzontale** per navigare facilmente tra i tasti
+- **Finestra centrata** automaticamente sullo schermo
 - **Selezione porta MIDI** tramite menu dropdown
 - **Visualizzazione in tempo reale** delle note suonate
 - **Tasti colorati** in base alla velocity della nota
-- **3 ottave** di estensione (da C3 a B5)
 - **Connessione/disconnessione** dinamica della porta MIDI
-- **Ridimensionamento** automatico della tastiera
+- **Ridimensionamento dinamico** - la tastiera si adatta quando ridimensioni la finestra
+- **Etichette note** su tasti C e F per orientamento rapido
 
 ### Uso da codice Python
 

@@ -32,8 +32,6 @@ def test_virtual_keyboard_creation():
     keyboard = VirtualKeyboard(root)
 
     assert keyboard is not None
-    assert keyboard.start_note == 48  # C3
-    assert keyboard.num_octaves == 3
     assert len(keyboard.active_notes) == 0
 
     root.destroy()
@@ -45,10 +43,10 @@ def test_virtual_keyboard_get_note_name():
     root = tk.Tk()
     keyboard = VirtualKeyboard(root)
 
-    # Test note specifiche
-    assert keyboard.get_note_name(60) == "C4"  # Middle C
-    assert keyboard.get_note_name(61) == "C#4"
-    assert keyboard.get_note_name(48) == "C3"  # Start note
-    assert keyboard.get_note_name(69) == "A4"  # 440 Hz
+    # Test note specifiche del pianoforte a 88 tasti
+    assert keyboard.get_note_name(21) == "A0"   # Prima nota del pianoforte
+    assert keyboard.get_note_name(60) == "C4"   # Middle C
+    assert keyboard.get_note_name(69) == "A4"   # 440 Hz
+    assert keyboard.get_note_name(108) == "C8"  # Ultima nota del pianoforte
 
     root.destroy()
