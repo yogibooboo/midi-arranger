@@ -24,7 +24,10 @@ Applicazione Python per arranger MIDI con supporto tastiera.
 midi-arranger/
 ├── src/                    # Codice sorgente
 │   ├── __init__.py
-│   └── midi_keyboard.py   # Visualizzatore tastiera MIDI GUI
+│   ├── midi_keyboard.py   # Visualizzatore tastiera MIDI GUI
+│   └── style_player.py    # Player per file .STY Yamaha
+├── sty/                   # File style Yamaha
+│   └── stili_miei/        # 18 file .STY di esempio
 ├── tests/                 # Test unitari
 │   ├── __init__.py
 │   └── test_midi_keyboard.py
@@ -76,6 +79,15 @@ python src/midi_keyboard.py
 - Gli strumenti vanno da pianoforte, chitarra, archi, ottoni, sintetizzatori e molto altro
 - Compatibile con dispositivi che supportano lo standard General MIDI (es. Microsoft GS Wavetable Synth)
 
+**Style Player (nuovo!):**
+- Clicca su **"Carica Style (.STY)"** per caricare un file style Yamaha
+- I file .STY nella cartella `sty/stili_miei/` sono già disponibili per test
+- Seleziona una sezione dal menu dropdown: Intro A/B/C, Main A/B/C/D, Fill, Ending
+- Clicca **Play** per avviare il playback in loop della sezione
+- Regola il **Tempo** (BPM) con lo spinbox
+- Clicca **Stop** per fermare il playback
+- Lo style viene riprodotto attraverso la porta MIDI Output selezionata
+
 **Ricevere note (visualizzazione):**
 - Suona sulla tua tastiera MIDI fisica
 - I tasti si illumineranno sulla tastiera virtuale in tempo reale
@@ -116,6 +128,15 @@ Il visualizzatore offre:
 - **Tasti cliccabili** - suona note cliccando sui tasti con il mouse
 - **Invio messaggi MIDI** a dispositivi esterni (synth, DAW, ecc.)
 - **Note-on al clic** e **note-off al rilascio** del mouse
+
+**Style Player:**
+- **Caricamento file .STY** Yamaha (formati SFF1/SFF2)
+- **Parsing automatico** delle sezioni (Intro, Main, Fill, Ending)
+- **Playback in loop** di qualsiasi sezione
+- **Controllo tempo** (BPM) in tempo reale
+- **Integrazione con MIDI Output** - usa la stessa porta dell'output keyboard
+- **18 file .STY di esempio** inclusi nella cartella `sty/stili_miei/`
+- Supporta stili Yamaha PSR, Tyros e altri arranger compatibili
 
 ### Uso da codice Python
 

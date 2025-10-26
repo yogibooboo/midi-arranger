@@ -1,7 +1,9 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import mido
 import threading
+from style_player import StylePlayer
+from chord_recognizer import ChordRecognizer
 
 # Lista completa degli strumenti General MIDI (128 programs)
 GM_INSTRUMENTS = [
@@ -99,7 +101,17 @@ class VirtualKeyboard:
         self.midi_output = None
         self.midi_channel = 0  # Canale MIDI (0-15, che corrisponde a 1-16)
         self.midi_program = 0  # Program MIDI (0-127, strumento GM)
-        
+
+        # Style Player
+        self.style_player = StylePlayer()
+        self.current_style_file = None
+
+        # Chord Recognizer
+        self.chord_recognizer = ChordRecognizer()
+
+        # Ultimo accordo valido (per HOLD mode)
+        self.last_valid_chord = None  # {'transpose': 0, 'filter': {0, 4, 7}, 'name': 'CMaj'}
+
         # Frame principale
         self.setup_ui()
         
@@ -152,7 +164,69 @@ class VirtualKeyboard:
 
         self.refresh_button = ttk.Button(refresh_frame, text="Aggiorna Porte MIDI", command=self.refresh_midi_ports)
         self.refresh_button.pack(side=tk.LEFT, padx=5)
-        
+
+        # Frame per Style Player
+        style_frame = ttk.LabelFrame(self.root, text="Style Player", padding="10")
+        style_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Prima riga - Carica style e info
+        style_top_frame = ttk.Frame(style_frame)
+        style_top_frame.pack(fill=tk.X)
+
+        self.load_style_button = ttk.Button(style_top_frame, text="Carica Style (.STY)", command=self.load_style_file)
+        self.load_style_button.pack(side=tk.LEFT, padx=5)
+
+        self.style_info_label = ttk.Label(style_top_frame, text="Nessuno style caricato")
+        self.style_info_label.pack(side=tk.LEFT, padx=10)
+
+        # Seconda riga - Selezione sezione e controlli playback
+        style_control_frame = ttk.Frame(style_frame)
+        style_control_frame.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(style_control_frame, text="Sezione:").pack(side=tk.LEFT, padx=5)
+
+        self.section_combo = ttk.Combobox(style_control_frame, width=15, state="readonly")
+        self.section_combo.pack(side=tk.LEFT, padx=5)
+        self.section_combo.bind('<<ComboboxSelected>>', self.on_section_change)
+
+        self.stop_button = ttk.Button(style_control_frame, text="Stop", command=self.stop_style, state="disabled")
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(style_control_frame, text="Tempo:").pack(side=tk.LEFT, padx=(20, 5))
+
+        self.tempo_var = tk.StringVar(value="120")
+        self.tempo_spinbox = ttk.Spinbox(style_control_frame, from_=40, to=240, width=6,
+                                         textvariable=self.tempo_var, command=self.on_tempo_change)
+        self.tempo_spinbox.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(style_control_frame, text="BPM").pack(side=tk.LEFT)
+
+        # Checkbox per mantenere ultimo accordo
+        self.hold_chord_var = tk.BooleanVar(value=True)
+        self.hold_chord_checkbox = ttk.Checkbutton(
+            style_control_frame,
+            text="Hold Chord",
+            variable=self.hold_chord_var
+        )
+        self.hold_chord_checkbox.pack(side=tk.LEFT, padx=(20, 5))
+
+        # Checkbox per mantenere drums
+        self.hold_drums_var = tk.BooleanVar(value=True)
+        self.hold_drums_checkbox = ttk.Checkbutton(
+            style_control_frame,
+            text="Hold Drums",
+            variable=self.hold_drums_var
+        )
+        self.hold_drums_checkbox.pack(side=tk.LEFT, padx=(5, 5))
+
+        self.style_status_label = ttk.Label(style_control_frame, text="")
+        self.style_status_label.pack(side=tk.LEFT, padx=20)
+
+        # Label per visualizzare accordo riconosciuto
+        self.chord_display_label = ttk.Label(style_control_frame, text="Accordo: ---",
+                                             font=("Arial", 12, "bold"), foreground="blue")
+        self.chord_display_label.pack(side=tk.LEFT, padx=20)
+
         # Frame per la tastiera con scrollbar
         keyboard_frame = ttk.Frame(self.root, padding="10")
         keyboard_frame.pack(fill=tk.BOTH, expand=True)
@@ -447,11 +521,15 @@ class VirtualKeyboard:
         """Evidenzia il tasto premuto"""
         if note in self.key_positions:
             self.active_notes.add(note)
-            
+
+            # Aggiorna chord recognizer
+            self.chord_recognizer.note_on(note)
+            self.update_chord_display()
+
             # Calcola il colore in base alla velocity
             intensity = int((velocity / 127) * 100) + 155
             color = f"#{intensity:02x}{intensity//2:02x}{intensity//2:02x}"
-            
+
             # Colora il tasto
             is_black = (note % 12) in [1, 3, 6, 8, 10]
             if is_black:
@@ -463,14 +541,158 @@ class VirtualKeyboard:
         """Ripristina il colore originale del tasto"""
         if note in self.key_positions and note in self.active_notes:
             self.active_notes.remove(note)
-            
+
+            # Aggiorna chord recognizer
+            self.chord_recognizer.note_off(note)
+            self.update_chord_display()
+
             # Ripristina colore originale
             is_black = (note % 12) in [1, 3, 6, 8, 10]
             original_color = "black" if is_black else "white"
             self.canvas.itemconfig(self.key_positions[note], fill=original_color)
-    
+
+    def update_chord_display(self):
+        """Aggiorna il display dell'accordo riconosciuto e applica trasposizione"""
+        chord_name = self.chord_recognizer.get_chord_name()
+
+        if chord_name:
+            # Accordo riconosciuto - avvia playback se non già attivo
+            if not self.style_player.is_playing() and self.current_style_file:
+                self.auto_start_style()
+
+            # Aggiorna display e trasposizione
+            self.chord_display_label.config(text=f"Accordo: {chord_name}", foreground="blue")
+
+            # Calcola trasposizione (da C = 0)
+            transpose_semitones = self.chord_recognizer.get_transposition_semitones(from_root=0)
+            self.style_player.set_transpose(transpose_semitones)
+
+            # Imposta il filtro con le note dell'accordo
+            chord_notes = self.chord_recognizer.get_notes_for_transposition()
+            if chord_notes:
+                self.style_player.set_chord_filter(chord_notes)
+
+                # Salva come ultimo accordo valido
+                self.last_valid_chord = {
+                    'transpose': transpose_semitones,
+                    'filter': chord_notes,
+                    'name': chord_name
+                }
+        else:
+            # Nessun accordo attivo
+            if self.hold_chord_var.get():
+                # HOLD MODE: mantiene ultimo accordo
+                if self.last_valid_chord:
+                    # Mostra ultimo accordo tra parentesi
+                    self.chord_display_label.config(
+                        text=f"Accordo: ({self.last_valid_chord['name']})",
+                        foreground="orange"
+                    )
+                    # Mantieni trasposizione e filtro dell'ultimo accordo
+                    # (già impostati, non fare nulla)
+                else:
+                    self.chord_display_label.config(text="Accordo: ---", foreground="gray")
+            else:
+                # STOP MODE: ferma subito le note melodiche
+                self.chord_display_label.config(text="Accordo: ---", foreground="gray")
+                if self.style_player.is_playing():
+                    # Ferma immediatamente le note (drums continuano se Hold Drums attivo)
+                    hold_drums = self.hold_drums_var.get()
+                    self.style_player.stop_melodic_notes(hold_drums=hold_drums)
+
+    # ========== STYLE PLAYER METHODS ==========
+
+    def load_style_file(self):
+        """Apre dialog per caricare un file .STY"""
+        filename = filedialog.askopenfilename(
+            title="Seleziona file Style",
+            initialdir="sty/stili_miei",
+            filetypes=[("Style files", "*.sty *.STY"), ("All files", "*.*")]
+        )
+
+        if filename:
+            if self.style_player.load_style(filename):
+                self.current_style_file = filename
+                info = self.style_player.get_style_info()
+
+                # Aggiorna label info
+                self.style_info_label.config(
+                    text=f"{info['name']} - {info['tempo']:.0f} BPM - {info['sections']} sezioni"
+                )
+
+                # Popola combo sezioni
+                sections = info['section_list']
+                self.section_combo['values'] = sections
+                if sections:
+                    self.section_combo.current(0)
+
+                # Imposta tempo
+                self.tempo_var.set(str(int(info['tempo'])))
+
+                # Abilita controllo stop
+                self.stop_button.config(state="normal")
+
+                # Connetti lo style player all'output MIDI corrente
+                if self.midi_output:
+                    self.style_player.set_midi_output(self.midi_output)
+
+                # Usa accordo corrente se disponibile, altrimenti C maggiore
+                chord_notes = self.chord_recognizer.get_notes_for_transposition()
+                if chord_notes:
+                    transpose_semitones = self.chord_recognizer.get_transposition_semitones(from_root=0)
+                    self.style_player.set_transpose(transpose_semitones)
+                    self.style_player.set_chord_filter(chord_notes)
+                else:
+                    # Nessun accordo attivo - default a C maggiore
+                    self.style_player.set_transpose(0)
+                    self.style_player.set_c_major()
+
+            else:
+                self.style_info_label.config(text="Errore caricamento style")
+
+    def auto_start_style(self):
+        """Avvia automaticamente il playback della sezione selezionata"""
+        section = self.section_combo.get()
+        if not section:
+            return
+
+        # Imposta output MIDI se non già fatto
+        if self.midi_output:
+            self.style_player.set_midi_output(self.midi_output)
+
+        # Avvia playback
+        if self.style_player.play_section(section, loop=True):
+            self.style_status_label.config(text=f"Playing: {section}", foreground="green")
+        else:
+            self.style_status_label.config(text="Errore playback", foreground="red")
+
+    def on_section_change(self, event=None):
+        """Gestisce il cambio di sezione in tempo reale"""
+        if self.style_player.is_playing():
+            # Cambio sezione in tempo reale
+            section = self.section_combo.get()
+            if section:
+                self.style_player.change_section(section)
+                self.style_status_label.config(text=f"Playing: {section}", foreground="green")
+
+    def stop_style(self):
+        """Ferma completamente il playback dello style"""
+        self.style_player.stop()
+        self.style_status_label.config(text="Stopped", foreground="orange")
+
+    def on_tempo_change(self):
+        """Gestisce il cambio di tempo"""
+        try:
+            tempo = int(self.tempo_var.get())
+            self.style_player.set_tempo(tempo)
+        except ValueError:
+            pass
+
+    # ========== END STYLE PLAYER METHODS ==========
+
     def on_closing(self):
         """Gestisce la chiusura della finestra"""
+        self.style_player.stop()
         self.disconnect_midi_input()
         self.disconnect_midi_output()
         self.root.destroy()
