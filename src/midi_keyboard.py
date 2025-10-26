@@ -76,13 +76,13 @@ class VirtualKeyboard:
         # Un pianoforte ha 52 tasti bianchi, rapporto lunghezza:larghezza = 6.5:1
         # Quindi: larghezza_tasto = window_width / 52
         #         altezza_tasto = larghezza_tasto * 6.5
-        # Aggiungiamo spazio per controlli (70px) e scrollbar (30px)
+        # Aggiungiamo molto più spazio per controlli (300px per matrice pulsanti e altri controlli)
         white_key_width = window_width / 52
         keyboard_height = int(white_key_width * 6.5)  # Proporzione realistica
-        window_height = keyboard_height + 100  # +100px per controlli e scrollbar
+        window_height = keyboard_height + 400  # +400px per controlli, matrice pulsanti e scrollbar
 
-        # Limita altezza allo schermo disponibile (max 80% altezza schermo)
-        max_height = int(screen_height * 0.8)
+        # Limita altezza allo schermo disponibile (max 90% altezza schermo)
+        max_height = int(screen_height * 0.9)
         window_height = min(window_height, max_height)
 
         # Centra la finestra sullo schermo
@@ -112,8 +112,17 @@ class VirtualKeyboard:
         # Ultimo accordo valido (per HOLD mode)
         self.last_valid_chord = None  # {'transpose': 0, 'filter': {0, 4, 7}, 'name': 'CMaj'}
 
+        # Sezione selezionata per l'auto-start
+        self.selected_section = None
+
+        # Timer per aggiornamento progresso
+        self.progress_update_timer = None
+
         # Frame principale
         self.setup_ui()
+
+        # Avvia aggiornamento progresso
+        self.update_progress_display()
         
     def setup_ui(self):
         # Frame per la selezione MIDI Input
@@ -179,18 +188,74 @@ class VirtualKeyboard:
         self.style_info_label = ttk.Label(style_top_frame, text="Nessuno style caricato")
         self.style_info_label.pack(side=tk.LEFT, padx=10)
 
-        # Seconda riga - Selezione sezione e controlli playback
+        # Seconda riga - Matrice pulsanti sezioni (4x4)
+        section_matrix_frame = ttk.Frame(style_frame)
+        section_matrix_frame.pack(fill=tk.X, pady=(5, 0))
+
+        # Etichette colonne
+        ttk.Label(section_matrix_frame, text="Intro", font=("Arial", 9, "bold")).grid(row=0, column=0, padx=2, pady=2)
+        ttk.Label(section_matrix_frame, text="Main", font=("Arial", 9, "bold")).grid(row=0, column=1, padx=2, pady=2)
+        ttk.Label(section_matrix_frame, text="Fill", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=2, pady=2)
+        ttk.Label(section_matrix_frame, text="Ending", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=2, pady=2)
+
+        # Matrice di pulsanti (4 righe x 4 colonne)
+        self.section_buttons = {}
+        section_labels = [
+            ['Intro A', 'Main A', 'Fill In AA', 'Ending A'],
+            ['Intro B', 'Main B', 'Fill In BB', 'Ending B'],
+            ['Intro C', 'Main C', 'Fill In CC', 'Ending C'],
+            [None, 'Main D', 'Fill In DD', None]
+        ]
+
+        for row_idx, row in enumerate(section_labels, start=1):
+            for col_idx, section_name in enumerate(row):
+                if section_name:
+                    btn = tk.Button(
+                        section_matrix_frame,
+                        text=section_name.split()[-1],  # Es: "A", "B", "C", "D", "AA", etc.
+                        width=12,
+                        height=2,
+                        state="disabled",
+                        command=lambda s=section_name: self.on_section_button_click(s),
+                        font=("Arial", 10, "bold"),
+                        bg="#E0E0E0",  # Grigio chiaro per pulsanti disabilitati
+                        disabledforeground="#A0A0A0"
+                    )
+                    btn.grid(row=row_idx, column=col_idx, padx=4, pady=4)
+                    self.section_buttons[section_name] = btn
+
+        # Frame per barre di progresso
+        progress_frame = ttk.Frame(style_frame)
+        progress_frame.pack(fill=tk.X, pady=(10, 0), padx=10)
+
+        # Barra progresso misura
+        ttk.Label(progress_frame, text="Misura:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.measure_progress_canvas = tk.Canvas(progress_frame, height=20, bg="white", highlightthickness=1, highlightbackground="gray")
+        self.measure_progress_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 20))
+
+        # Barra progresso sezione
+        ttk.Label(progress_frame, text="Sezione:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.section_progress_canvas = tk.Canvas(progress_frame, height=20, bg="white", highlightthickness=1, highlightbackground="gray")
+        self.section_progress_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Frame per controlli playback
         style_control_frame = ttk.Frame(style_frame)
         style_control_frame.pack(fill=tk.X, pady=(5, 0))
 
-        ttk.Label(style_control_frame, text="Sezione:").pack(side=tk.LEFT, padx=5)
-
-        self.section_combo = ttk.Combobox(style_control_frame, width=15, state="readonly")
-        self.section_combo.pack(side=tk.LEFT, padx=5)
-        self.section_combo.bind('<<ComboboxSelected>>', self.on_section_change)
-
         self.stop_button = ttk.Button(style_control_frame, text="Stop", command=self.stop_style, state="disabled")
         self.stop_button.pack(side=tk.LEFT, padx=5)
+
+        self.current_section_label = ttk.Label(style_control_frame, text="Sezione: ---", font=("Arial", 10, "bold"))
+        self.current_section_label.pack(side=tk.LEFT, padx=10)
+
+        # Label per misura e beat
+        self.measure_label = ttk.Label(style_control_frame, text="Misura: --", font=("Arial", 10, "bold"))
+        self.measure_label.pack(side=tk.LEFT, padx=10)
+
+        self.beat_label = ttk.Label(style_control_frame, text="Beat: -/-", font=("Arial", 10, "bold"))
+        self.beat_label.pack(side=tk.LEFT, padx=10)
 
         ttk.Label(style_control_frame, text="Tempo:").pack(side=tk.LEFT, padx=(20, 5))
 
@@ -560,6 +625,9 @@ class VirtualKeyboard:
             if not self.style_player.is_playing() and self.current_style_file:
                 self.auto_start_style()
 
+            # Riattiva le note melodiche (se erano bloccate)
+            self.style_player.block_melodic_notes = False
+
             # Aggiorna display e trasposizione
             self.chord_display_label.config(text=f"Accordo: {chord_name}", foreground="blue")
 
@@ -620,11 +688,13 @@ class VirtualKeyboard:
                     text=f"{info['name']} - {info['tempo']:.0f} BPM - {info['sections']} sezioni"
                 )
 
-                # Popola combo sezioni
-                sections = info['section_list']
-                self.section_combo['values'] = sections
-                if sections:
-                    self.section_combo.current(0)
+                # Abilita/disabilita pulsanti sezioni in base a quelle disponibili
+                available_sections = info['section_list']
+                for section_name, button in self.section_buttons.items():
+                    if section_name in available_sections:
+                        button.config(state="normal", bg="#D0D0D0", fg="black", activebackground="#B0B0B0")
+                    else:
+                        button.config(state="disabled", bg="#E0E0E0")
 
                 # Imposta tempo
                 self.tempo_var.set(str(int(info['tempo'])))
@@ -651,34 +721,76 @@ class VirtualKeyboard:
                 self.style_info_label.config(text="Errore caricamento style")
 
     def auto_start_style(self):
-        """Avvia automaticamente il playback della sezione selezionata"""
-        section = self.section_combo.get()
-        if not section:
-            return
+        """Avvia automaticamente il playback della sezione selezionata o della prima Main disponibile"""
+        # Se c'è una sezione selezionata, usa quella
+        if self.selected_section and self.selected_section in self.section_buttons:
+            if str(self.section_buttons[self.selected_section].cget('state')) == 'normal':
+                self.start_section(self.selected_section)
+                return
 
+        # Altrimenti cerca la prima sezione Main disponibile
+        for section_name in ['Main A', 'Main B', 'Main C', 'Main D']:
+            if section_name in self.section_buttons and str(self.section_buttons[section_name].cget('state')) == 'normal':
+                self.selected_section = section_name
+                self.start_section(section_name)
+                return
+
+    def update_section_button_colors(self):
+        """Aggiorna i colori dei pulsanti sezione per mostrare quale è selezionato/in esecuzione"""
+        for section_name, button in self.section_buttons.items():
+            if str(button.cget('state')) == 'normal':
+                if section_name == self.selected_section:
+                    if self.style_player.is_playing():
+                        # Sezione in esecuzione - verde
+                        button.config(bg="#90EE90", fg="black", activebackground="#70CE70")
+                    else:
+                        # Sezione selezionata ma non in esecuzione - arancione
+                        button.config(bg="#FFD700", fg="black", activebackground="#FFC700")
+                else:
+                    # Sezione disponibile ma non selezionata - grigio
+                    button.config(bg="#D0D0D0", fg="black", activebackground="#B0B0B0")
+
+    def on_section_button_click(self, section_name):
+        """Gestisce il clic su un pulsante sezione"""
+        # Seleziona la sezione
+        self.selected_section = section_name
+
+        if self.style_player.is_playing():
+            # Cambio sezione in tempo reale
+            self.style_player.change_section(section_name)
+            self.current_section_label.config(text=f"Sezione: {section_name}", foreground="blue")
+            self.style_status_label.config(text=f"Playing: {section_name}", foreground="green")
+        else:
+            # Mostra sezione selezionata (ma non avvia)
+            self.current_section_label.config(text=f"Sezione: {section_name} (pronta)", foreground="orange")
+
+        # Aggiorna colori pulsanti
+        self.update_section_button_colors()
+
+    def start_section(self, section_name):
+        """Avvia il playback di una sezione specifica"""
         # Imposta output MIDI se non già fatto
         if self.midi_output:
             self.style_player.set_midi_output(self.midi_output)
 
         # Avvia playback
-        if self.style_player.play_section(section, loop=True):
-            self.style_status_label.config(text=f"Playing: {section}", foreground="green")
+        if self.style_player.play_section(section_name, loop=True):
+            self.current_section_label.config(text=f"Sezione: {section_name}", foreground="blue")
+            self.style_status_label.config(text=f"Playing: {section_name}", foreground="green")
+            # Aggiorna colori pulsanti
+            self.update_section_button_colors()
         else:
             self.style_status_label.config(text="Errore playback", foreground="red")
-
-    def on_section_change(self, event=None):
-        """Gestisce il cambio di sezione in tempo reale"""
-        if self.style_player.is_playing():
-            # Cambio sezione in tempo reale
-            section = self.section_combo.get()
-            if section:
-                self.style_player.change_section(section)
-                self.style_status_label.config(text=f"Playing: {section}", foreground="green")
 
     def stop_style(self):
         """Ferma completamente il playback dello style"""
         self.style_player.stop()
+        self.current_section_label.config(text="Sezione: ---")
         self.style_status_label.config(text="Stopped", foreground="orange")
+        # Resetta selezione
+        self.selected_section = None
+        # Aggiorna colori pulsanti
+        self.update_section_button_colors()
 
     def on_tempo_change(self):
         """Gestisce il cambio di tempo"""
@@ -688,10 +800,74 @@ class VirtualKeyboard:
         except ValueError:
             pass
 
+    def draw_progress_bar(self, canvas, progress, num_divisions):
+        """Disegna una barra di progresso con divisioni"""
+        canvas.delete("all")
+
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+
+        if width <= 1:
+            width = 200
+        if height <= 1:
+            height = 20
+
+        # Disegna sfondo bianco
+        canvas.create_rectangle(0, 0, width, height, fill="white", outline="")
+
+        # Disegna barra di progresso (blu)
+        progress_width = int(width * progress)
+        if progress_width > 0:
+            canvas.create_rectangle(0, 0, progress_width, height, fill="#4CAF50", outline="")
+
+        # Disegna divisioni verticali
+        if num_divisions > 0:
+            for i in range(1, num_divisions):
+                x = int((width / num_divisions) * i)
+                canvas.create_line(x, 0, x, height, fill="gray", width=1)
+
+    def update_progress_display(self):
+        """Aggiorna la visualizzazione del progresso (misura, beat, barra)"""
+        progress = self.style_player.get_playback_progress()
+
+        if progress:
+            # Aggiorna misura
+            self.measure_label.config(text=f"Misura: {progress['measure']}/{progress['total_measures']}")
+
+            # Aggiorna beat
+            self.beat_label.config(text=f"Beat: {progress['beat']}/{progress['total_beats']}")
+
+            # Disegna barra progresso misura (con divisioni per ogni beat)
+            self.draw_progress_bar(
+                self.measure_progress_canvas,
+                progress['measure_progress'],
+                progress['total_beats']
+            )
+
+            # Disegna barra progresso sezione (con divisioni per ogni misura)
+            self.draw_progress_bar(
+                self.section_progress_canvas,
+                progress['section_progress'],
+                progress['total_measures']
+            )
+        else:
+            # Nessun playback attivo - resetta visualizzazione
+            self.measure_label.config(text="Misura: --/--")
+            self.beat_label.config(text="Beat: -/-")
+            self.draw_progress_bar(self.measure_progress_canvas, 0, 4)
+            self.draw_progress_bar(self.section_progress_canvas, 0, 8)
+
+        # Schedula prossimo aggiornamento (ogni 50ms per fluidità)
+        self.progress_update_timer = self.root.after(50, self.update_progress_display)
+
     # ========== END STYLE PLAYER METHODS ==========
 
     def on_closing(self):
         """Gestisce la chiusura della finestra"""
+        # Ferma timer aggiornamento progresso
+        if self.progress_update_timer:
+            self.root.after_cancel(self.progress_update_timer)
+
         self.style_player.stop()
         self.disconnect_midi_input()
         self.disconnect_midi_output()

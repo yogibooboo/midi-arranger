@@ -29,6 +29,15 @@ class StylePlayer:
         self.play_thread = None
         self.midi_output = None
 
+        # Time signature (tempo in chiave)
+        self.time_signature_numerator = 4  # battiti per misura (default 4/4)
+        self.time_signature_denominator = 4  # valore della nota (default 4/4)
+
+        # Tracciamento progresso playback
+        self.current_measure = 0
+        self.current_beat = 0
+        self.current_tick_in_section = 0
+
         # Filtro accordo - se impostato, filtra le note suonate
         self.chord_filter = None  # None = no filter, oppure set di note (0-11)
 
@@ -37,6 +46,9 @@ class StylePlayer:
 
         # Stop a fine battuta
         self.stop_at_measure_end = False  # Se True, ferma alla fine della battuta corrente
+
+        # Blocco note melodiche (solo drums attivo)
+        self.block_melodic_notes = False  # Se True, blocca tutte le note tranne drums
 
     def load_style(self, filename):
         """Carica un file .STY"""
@@ -55,7 +67,7 @@ class StylePlayer:
             return False
 
     def _parse_metadata(self):
-        """Estrae metadata dallo style (nome, tempo, ecc.)"""
+        """Estrae metadata dallo style (nome, tempo, time signature, ecc.)"""
         if not self.midi_file or len(self.midi_file.tracks) == 0:
             return
 
@@ -64,6 +76,9 @@ class StylePlayer:
                 self.style_name = msg.name.strip()
             elif msg.type == 'set_tempo':
                 self.tempo_bpm = mido.tempo2bpm(msg.tempo)
+            elif msg.type == 'time_signature':
+                self.time_signature_numerator = msg.numerator
+                self.time_signature_denominator = msg.denominator
 
     def _parse_sections(self):
         """Identifica le sezioni dello style (Main A, Intro, ecc.)"""
@@ -172,12 +187,22 @@ class StylePlayer:
         section = self.sections[section_name]
         events = section['events']
 
+        # Controlla se è una sezione Ending
+        is_ending_section = section_name.startswith('Ending')
+
         # Tempo in secondi per tick
         seconds_per_tick = 60.0 / (self.tempo_bpm * self.ticks_per_beat)
 
-        # Una battuta = 4 beat * ticks_per_beat
-        ticks_per_measure = 4 * self.ticks_per_beat
+        # Calcola ticks per misura basato sulla time signature
+        ticks_per_measure = self.time_signature_numerator * self.ticks_per_beat
+        ticks_per_beat = self.ticks_per_beat
+
         current_tick = 0
+
+        # Reset tracciamento progresso
+        self.current_tick_in_section = 0
+        self.current_measure = 1
+        self.current_beat = 1
 
         while self.playing:
             # Riproduci gli eventi della sezione
@@ -196,19 +221,29 @@ class StylePlayer:
                 if event.time > 0:
                     time.sleep(event.time * seconds_per_tick)
                     current_tick += event.time
+                    self.current_tick_in_section = current_tick
+
+                    # Calcola misura e beat correnti
+                    self.current_measure = int(current_tick / ticks_per_measure) + 1
+                    tick_in_measure = current_tick % ticks_per_measure
+                    self.current_beat = int(tick_in_measure / ticks_per_beat) + 1
 
                 # Invia il messaggio MIDI (solo messaggi non-meta)
                 if not event.is_meta:
                     # Crea una copia del messaggio per non modificare l'originale
                     msg = event.copy()
 
+                    # Se le note melodiche sono bloccate, suona solo drums
+                    should_send = True
+                    if self.block_melodic_notes and msg.type in ['note_on', 'note_off'] and msg.channel != 9:
+                        should_send = False
+
                     # Applica trasposizione alle note (ma NON al canale drums - channel 9)
-                    if self.transpose_semitones != 0 and msg.type in ['note_on', 'note_off'] and msg.channel != 9:
+                    if should_send and self.transpose_semitones != 0 and msg.type in ['note_on', 'note_off'] and msg.channel != 9:
                         msg.note = max(0, min(127, msg.note + self.transpose_semitones))
 
                     # Applica filtro accordo se impostato (ma NON al canale drums - channel 9)
-                    should_send = True
-                    if self.chord_filter is not None and msg.type in ['note_on', 'note_off'] and msg.channel != 9:
+                    if should_send and self.chord_filter is not None and msg.type in ['note_on', 'note_off'] and msg.channel != 9:
                         note_class = msg.note % 12
                         if note_class not in self.chord_filter:
                             should_send = False
@@ -222,6 +257,10 @@ class StylePlayer:
             # Reset tick count per il prossimo loop
             current_tick = 0
 
+            # Se è una sezione Ending, ferma dopo la prima esecuzione
+            if is_ending_section:
+                break
+
             # Se non è in loop, esci
             if not loop:
                 break
@@ -232,11 +271,13 @@ class StylePlayer:
 
         self.playing = False
         self.stop_at_measure_end = False  # Reset flag
+        self.block_melodic_notes = False  # Reset flag
 
     def stop(self):
         """Ferma il playback immediatamente"""
         self.playing = False
         self.stop_at_measure_end = False
+        self.block_melodic_notes = False
 
         # Attendi che il thread termini
         if self.play_thread and self.play_thread.is_alive():
@@ -309,6 +350,13 @@ class StylePlayer:
         if not self.midi_output:
             return
 
+        if hold_drums:
+            # Blocca la generazione di note melodiche, continua solo drums
+            self.block_melodic_notes = True
+        else:
+            # Ferma tutto
+            self.playing = False
+
         # Invia All Notes Off su tutti i canali tranne drums (se hold_drums=True)
         for channel in range(16):
             if hold_drums and channel == 9:
@@ -365,5 +413,37 @@ class StylePlayer:
             'name': self.style_name or 'Unknown',
             'tempo': self.tempo_bpm,
             'sections': len(self.sections),
-            'section_list': self.get_available_sections()
+            'section_list': self.get_available_sections(),
+            'time_signature': f"{self.time_signature_numerator}/{self.time_signature_denominator}"
+        }
+
+    def get_playback_progress(self):
+        """Ritorna informazioni sul progresso del playback corrente"""
+        if not self.playing or not self.current_section:
+            return None
+
+        section = self.sections.get(self.current_section)
+        if not section:
+            return None
+
+        # Calcola progresso nella misura corrente (0.0 a 1.0)
+        ticks_per_measure = self.time_signature_numerator * self.ticks_per_beat
+        tick_in_measure = self.current_tick_in_section % ticks_per_measure
+        measure_progress = tick_in_measure / ticks_per_measure
+
+        # Calcola progresso nella sezione (0.0 a 1.0)
+        section_length_ticks = section['length_ticks']
+        section_progress = (self.current_tick_in_section % section_length_ticks) / section_length_ticks if section_length_ticks > 0 else 0
+
+        # Calcola numero totale di misure nella sezione
+        total_measures = int(section_length_ticks / ticks_per_measure)
+
+        return {
+            'measure': self.current_measure,
+            'beat': self.current_beat,
+            'total_beats': self.time_signature_numerator,
+            'measure_progress': measure_progress,  # 0.0 a 1.0
+            'section_progress': section_progress,  # 0.0 a 1.0
+            'total_measures': total_measures,
+            'section_name': self.current_section
         }
