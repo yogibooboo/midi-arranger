@@ -137,6 +137,13 @@ class StylePlayer:
         """Ritorna lista delle sezioni disponibili nello style"""
         return sorted(list(self.sections.keys()))
 
+    def _find_first_main(self):
+        """Trova il primo Main disponibile (A, B, C, D)"""
+        for main in ['Main A', 'Main B', 'Main C', 'Main D']:
+            if main in self.sections:
+                return main
+        return None
+
     def get_section_info(self, section_name):
         """Ottiene informazioni su una sezione specifica"""
         if section_name not in self.sections:
@@ -187,7 +194,8 @@ class StylePlayer:
         section = self.sections[section_name]
         events = section['events']
 
-        # Controlla se è una sezione Ending
+        # Determina tipo sezione
+        is_intro_section = section_name.startswith('Intro')
         is_ending_section = section_name.startswith('Ending')
 
         # Tempo in secondi per tick
@@ -254,8 +262,24 @@ class StylePlayer:
                         except Exception as e:
                             print(f"Errore invio MIDI: {e}")
 
-            # Reset tick count per il prossimo loop
-            current_tick = 0
+            # Fine della sezione raggiunta
+
+            # Se è Intro, passa automaticamente a Main
+            if is_intro_section:
+                # Trova primo Main disponibile
+                main_section = self._find_first_main()
+                if main_section:
+                    self.current_section = main_section
+                    section_name = main_section
+                    section = self.sections[section_name]
+                    events = section['events']
+                    is_intro_section = False
+                    # Reset per nuova sezione
+                    current_tick = 0
+                    continue
+                else:
+                    # Nessun Main disponibile, ferma
+                    break
 
             # Se è una sezione Ending, ferma dopo la prima esecuzione
             if is_ending_section:
@@ -268,6 +292,9 @@ class StylePlayer:
             # Se dobbiamo fermarci, esci
             if self.stop_at_measure_end:
                 break
+
+            # Reset tick count per il prossimo loop (Main e Fill ripartono)
+            current_tick = 0
 
         self.playing = False
         self.stop_at_measure_end = False  # Reset flag

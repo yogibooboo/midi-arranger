@@ -267,7 +267,7 @@ class VirtualKeyboard:
         ttk.Label(style_control_frame, text="BPM").pack(side=tk.LEFT)
 
         # Checkbox per mantenere ultimo accordo
-        self.hold_chord_var = tk.BooleanVar(value=True)
+        self.hold_chord_var = tk.BooleanVar(value=False)
         self.hold_chord_checkbox = ttk.Checkbutton(
             style_control_frame,
             text="Hold Chord",
@@ -635,17 +635,11 @@ class VirtualKeyboard:
             transpose_semitones = self.chord_recognizer.get_transposition_semitones(from_root=0)
             self.style_player.set_transpose(transpose_semitones)
 
-            # Imposta il filtro con le note dell'accordo
-            chord_notes = self.chord_recognizer.get_notes_for_transposition()
-            if chord_notes:
-                self.style_player.set_chord_filter(chord_notes)
-
-                # Salva come ultimo accordo valido
-                self.last_valid_chord = {
-                    'transpose': transpose_semitones,
-                    'filter': chord_notes,
-                    'name': chord_name
-                }
+            # Salva come ultimo accordo valido
+            self.last_valid_chord = {
+                'transpose': transpose_semitones,
+                'name': chord_name
+            }
         else:
             # Nessun accordo attivo
             if self.hold_chord_var.get():
@@ -706,33 +700,39 @@ class VirtualKeyboard:
                 if self.midi_output:
                     self.style_player.set_midi_output(self.midi_output)
 
-                # Usa accordo corrente se disponibile, altrimenti C maggiore
-                chord_notes = self.chord_recognizer.get_notes_for_transposition()
-                if chord_notes:
-                    transpose_semitones = self.chord_recognizer.get_transposition_semitones(from_root=0)
-                    self.style_player.set_transpose(transpose_semitones)
-                    self.style_player.set_chord_filter(chord_notes)
-                else:
-                    # Nessun accordo attivo - default a C maggiore
-                    self.style_player.set_transpose(0)
-                    self.style_player.set_c_major()
+                # Imposta trasposizione a 0 (nessuna trasposizione) come default
+                self.style_player.set_transpose(0)
+
+                # Auto-seleziona primo Intro o Main disponibile
+                self.auto_select_initial_section()
 
             else:
                 self.style_info_label.config(text="Errore caricamento style")
 
+    def auto_select_initial_section(self):
+        """Auto-seleziona primo Intro disponibile, o primo Main se nessun Intro"""
+        # Cerca primo Intro disponibile
+        for section_name in ['Intro A', 'Intro B', 'Intro C']:
+            if section_name in self.section_buttons and str(self.section_buttons[section_name].cget('state')) == 'normal':
+                self.selected_section = section_name
+                self.current_section_label.config(text=f"Sezione: {section_name} (pronta)", foreground="orange")
+                self.update_section_button_colors()
+                return
+
+        # Nessun Intro, cerca primo Main disponibile
+        for section_name in ['Main A', 'Main B', 'Main C', 'Main D']:
+            if section_name in self.section_buttons and str(self.section_buttons[section_name].cget('state')) == 'normal':
+                self.selected_section = section_name
+                self.current_section_label.config(text=f"Sezione: {section_name} (pronta)", foreground="orange")
+                self.update_section_button_colors()
+                return
+
     def auto_start_style(self):
-        """Avvia automaticamente il playback della sezione selezionata o della prima Main disponibile"""
+        """Avvia automaticamente il playback della sezione selezionata"""
         # Se c'è una sezione selezionata, usa quella
         if self.selected_section and self.selected_section in self.section_buttons:
             if str(self.section_buttons[self.selected_section].cget('state')) == 'normal':
                 self.start_section(self.selected_section)
-                return
-
-        # Altrimenti cerca la prima sezione Main disponibile
-        for section_name in ['Main A', 'Main B', 'Main C', 'Main D']:
-            if section_name in self.section_buttons and str(self.section_buttons[section_name].cget('state')) == 'normal':
-                self.selected_section = section_name
-                self.start_section(section_name)
                 return
 
     def update_section_button_colors(self):
@@ -785,12 +785,9 @@ class VirtualKeyboard:
     def stop_style(self):
         """Ferma completamente il playback dello style"""
         self.style_player.stop()
-        self.current_section_label.config(text="Sezione: ---")
         self.style_status_label.config(text="Stopped", foreground="orange")
-        # Resetta selezione
-        self.selected_section = None
-        # Aggiorna colori pulsanti
-        self.update_section_button_colors()
+        # Auto-seleziona primo Intro o Main
+        self.auto_select_initial_section()
 
     def on_tempo_change(self):
         """Gestisce il cambio di tempo"""
@@ -820,17 +817,24 @@ class VirtualKeyboard:
         if progress_width > 0:
             canvas.create_rectangle(0, 0, progress_width, height, fill="#4CAF50", outline="")
 
-        # Disegna divisioni verticali
+        # Disegna divisioni verticali (più marcate)
         if num_divisions > 0:
             for i in range(1, num_divisions):
                 x = int((width / num_divisions) * i)
-                canvas.create_line(x, 0, x, height, fill="gray", width=1)
+                canvas.create_line(x, 0, x, height, fill="#333333", width=2)
 
     def update_progress_display(self):
         """Aggiorna la visualizzazione del progresso (misura, beat, barra)"""
         progress = self.style_player.get_playback_progress()
 
         if progress:
+            # Controlla se la sezione è cambiata (Intro -> Main automatico)
+            current_playing_section = progress.get('section_name')
+            if current_playing_section and current_playing_section != self.selected_section:
+                # La sezione è cambiata (es. Intro -> Main)
+                self.selected_section = current_playing_section
+                self.update_section_button_colors()
+
             # Aggiorna misura
             self.measure_label.config(text=f"Misura: {progress['measure']}/{progress['total_measures']}")
 
