@@ -115,6 +115,9 @@ class VirtualKeyboard:
         # Sezione selezionata per l'auto-start
         self.selected_section = None
 
+        # Flag per attendere rilascio completo delle note prima di riattivare
+        self.waiting_for_all_notes_off = False
+
         # Timer per aggiornamento progresso
         self.progress_update_timer = None
 
@@ -623,7 +626,9 @@ class VirtualKeyboard:
         if chord_name:
             # Accordo riconosciuto - avvia playback se non già attivo
             if not self.style_player.is_playing() and self.current_style_file:
-                self.auto_start_style()
+                # Se stiamo aspettando il rilascio completo, non fare nulla
+                if not self.waiting_for_all_notes_off:
+                    self.auto_start_style()
 
             # Riattiva le note melodiche (se erano bloccate)
             self.style_player.block_melodic_notes = False
@@ -642,6 +647,10 @@ class VirtualKeyboard:
             }
         else:
             # Nessun accordo attivo
+            # Se tutte le note sono rilasciate, resetta il flag di attesa
+            if len(self.active_notes) == 0:
+                self.waiting_for_all_notes_off = False
+
             if self.hold_chord_var.get():
                 # HOLD MODE: mantiene ultimo accordo
                 if self.last_valid_chord:
@@ -789,6 +798,26 @@ class VirtualKeyboard:
         # Auto-seleziona primo Intro o Main
         self.auto_select_initial_section()
 
+        # Reset completo: resetta flag e pulisci active_notes
+        # (lo Stop manuale non deve aspettare - agisce subito)
+        self.waiting_for_all_notes_off = False
+        self.active_notes.clear()
+        self.chord_recognizer.clear()
+        self.update_chord_display()
+
+        # Invia MIDI reset per spegnere eventuali note rimaste accese
+        if self.midi_output:
+            for channel in range(16):
+                try:
+                    # All Notes Off
+                    msg = mido.Message('control_change', control=123, value=0, channel=channel)
+                    self.midi_output.send(msg)
+                    # All Sound Off (più drastico)
+                    msg = mido.Message('control_change', control=120, value=0, channel=channel)
+                    self.midi_output.send(msg)
+                except:
+                    pass
+
     def on_tempo_change(self):
         """Gestisce il cambio di tempo"""
         try:
@@ -855,7 +884,20 @@ class VirtualKeyboard:
                 progress['total_measures']
             )
         else:
-            # Nessun playback attivo - resetta visualizzazione
+            # Nessun playback attivo - controlla se c'è una sezione da selezionare
+            if self.style_player.next_section_after_stop:
+                next_section = self.style_player.next_section_after_stop
+                self.style_player.next_section_after_stop = None  # Reset
+                self.selected_section = next_section
+                self.update_section_button_colors()
+                # Attiva flag per attendere rilascio completo delle note
+                # MA se le note sono già tutte rilasciate, resetta subito la flag
+                if len(self.active_notes) == 0:
+                    self.waiting_for_all_notes_off = False
+                else:
+                    self.waiting_for_all_notes_off = True
+
+            # Resetta visualizzazione
             self.measure_label.config(text="Misura: --/--")
             self.beat_label.config(text="Beat: -/-")
             self.draw_progress_bar(self.measure_progress_canvas, 0, 4)

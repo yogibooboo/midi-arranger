@@ -50,6 +50,9 @@ class StylePlayer:
         # Blocco note melodiche (solo drums attivo)
         self.block_melodic_notes = False  # Se True, blocca tutte le note tranne drums
 
+        # Sezione da selezionare dopo lo stop (per UI)
+        self.next_section_after_stop = None
+
     def load_style(self, filename):
         """Carica un file .STY"""
         try:
@@ -136,6 +139,13 @@ class StylePlayer:
     def get_available_sections(self):
         """Ritorna lista delle sezioni disponibili nello style"""
         return sorted(list(self.sections.keys()))
+
+    def _find_first_intro(self):
+        """Trova il primo Intro disponibile (A, B, C)"""
+        for intro in ['Intro A', 'Intro B', 'Intro C']:
+            if intro in self.sections:
+                return intro
+        return None
 
     def _find_first_main(self):
         """Trova il primo Main disponibile (A, B, C, D)"""
@@ -283,6 +293,11 @@ class StylePlayer:
 
             # Se è una sezione Ending, ferma dopo la prima esecuzione
             if is_ending_section:
+                # Imposta il prossimo Intro da selezionare nell'UI
+                self.next_section_after_stop = self._find_first_intro()
+                if not self.next_section_after_stop:
+                    # Se non c'è Intro, seleziona il primo Main
+                    self.next_section_after_stop = self._find_first_main()
                 break
 
             # Se non è in loop, esci
