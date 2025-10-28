@@ -118,6 +118,11 @@ class VirtualKeyboard:
         # Flag per attendere rilascio completo delle note prima di riattivare
         self.waiting_for_all_notes_off = False
 
+        # Chord debouncing
+        self.chord_debounce_ms = 50  # Default 50ms
+        self.pending_chord = None  # Accordo in attesa di applicazione
+        self.chord_debounce_timer = None  # Timer per il debounce
+
         # Timer per aggiornamento progresso
         self.progress_update_timer = None
 
@@ -268,6 +273,16 @@ class VirtualKeyboard:
         self.tempo_spinbox.pack(side=tk.LEFT, padx=5)
 
         ttk.Label(style_control_frame, text="BPM").pack(side=tk.LEFT)
+
+        # Chord debounce time
+        ttk.Label(style_control_frame, text="Debounce:").pack(side=tk.LEFT, padx=(20, 5))
+
+        self.debounce_var = tk.StringVar(value="50")
+        self.debounce_spinbox = ttk.Spinbox(style_control_frame, from_=0, to=200, width=5,
+                                            textvariable=self.debounce_var, command=self.on_debounce_change)
+        self.debounce_spinbox.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(style_control_frame, text="ms").pack(side=tk.LEFT)
 
         # Checkbox per mantenere ultimo accordo
         self.hold_chord_var = tk.BooleanVar(value=False)
@@ -624,29 +639,44 @@ class VirtualKeyboard:
         chord_name = self.chord_recognizer.get_chord_name()
 
         if chord_name:
-            # Accordo riconosciuto - avvia playback se non già attivo
-            if not self.style_player.is_playing() and self.current_style_file:
-                # Se stiamo aspettando il rilascio completo, non fare nulla
-                if not self.waiting_for_all_notes_off:
-                    self.auto_start_style()
-
-            # Riattiva le note melodiche (se erano bloccate)
-            self.style_player.block_melodic_notes = False
-
-            # Aggiorna display e trasposizione
-            self.chord_display_label.config(text=f"Accordo: {chord_name}", foreground="blue")
-
             # Calcola trasposizione (da C = 0)
             transpose_semitones = self.chord_recognizer.get_transposition_semitones(from_root=0)
-            self.style_player.set_transpose(transpose_semitones)
 
-            # Salva come ultimo accordo valido
-            self.last_valid_chord = {
+            # Crea il chord data
+            chord_data = {
                 'transpose': transpose_semitones,
                 'name': chord_name
             }
+
+            # Controlla se l'accordo è cambiato rispetto al pending
+            if self.pending_chord is None or self.pending_chord != chord_data:
+                # Nuovo accordo o accordo diverso - cancella timer precedente
+                if self.chord_debounce_timer:
+                    self.root.after_cancel(self.chord_debounce_timer)
+
+                # Salva il nuovo accordo pending
+                self.pending_chord = chord_data
+
+                # Aggiorna display immediatamente (visual feedback)
+                self.chord_display_label.config(text=f"Accordo: {chord_name}", foreground="blue")
+
+                # Se il debounce è 0, applica immediatamente
+                if self.chord_debounce_ms == 0:
+                    self.apply_chord(chord_data)
+                else:
+                    # Altrimenti schedula l'applicazione dopo il debounce
+                    self.chord_debounce_timer = self.root.after(
+                        self.chord_debounce_ms,
+                        lambda: self.apply_chord(chord_data)
+                    )
         else:
             # Nessun accordo attivo
+            # Cancella pending chord e timer
+            if self.chord_debounce_timer:
+                self.root.after_cancel(self.chord_debounce_timer)
+                self.chord_debounce_timer = None
+            self.pending_chord = None
+
             # Se tutte le note sono rilasciate, resetta il flag di attesa
             if len(self.active_notes) == 0:
                 self.waiting_for_all_notes_off = False
@@ -670,6 +700,28 @@ class VirtualKeyboard:
                     # Ferma immediatamente le note (drums continuano se Hold Drums attivo)
                     hold_drums = self.hold_drums_var.get()
                     self.style_player.stop_melodic_notes(hold_drums=hold_drums)
+
+    def apply_chord(self, chord_data):
+        """
+        Applica l'accordo dopo il debounce.
+        Chiamato dal timer dopo chord_debounce_ms millisecondi.
+        """
+        # Verifica che sia ancora il chord atteso (potrebbe essere cambiato nel frattempo)
+        if self.pending_chord == chord_data:
+            # Accordo riconosciuto - avvia playback se non già attivo
+            if not self.style_player.is_playing() and self.current_style_file:
+                # Se stiamo aspettando il rilascio completo, non fare nulla
+                if not self.waiting_for_all_notes_off:
+                    self.auto_start_style()
+
+            # Riattiva le note melodiche (se erano bloccate)
+            self.style_player.block_melodic_notes = False
+
+            # Applica trasposizione
+            self.style_player.set_transpose(chord_data['transpose'])
+
+            # Salva come ultimo accordo valido
+            self.last_valid_chord = chord_data
 
     # ========== STYLE PLAYER METHODS ==========
 
@@ -823,6 +875,14 @@ class VirtualKeyboard:
         try:
             tempo = int(self.tempo_var.get())
             self.style_player.set_tempo(tempo)
+        except ValueError:
+            pass
+
+    def on_debounce_change(self):
+        """Gestisce il cambio del tempo di debounce"""
+        try:
+            debounce_ms = int(self.debounce_var.get())
+            self.chord_debounce_ms = max(0, min(200, debounce_ms))
         except ValueError:
             pass
 

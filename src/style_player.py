@@ -53,6 +53,10 @@ class StylePlayer:
         # Sezione da selezionare dopo lo stop (per UI)
         self.next_section_after_stop = None
 
+        # Eventi di setup iniziali (program_change, control_change)
+        # Questi sono gli eventi PRIMA del primo marker
+        self.initial_setup_events = []
+
     def load_style(self, filename):
         """Carica un file .STY"""
         try:
@@ -98,14 +102,25 @@ class StylePlayer:
             section_start_time = 0
             absolute_time = 0
             section_events = []
+            first_marker_found = False
 
             for msg in track:
                 absolute_time += msg.time
 
                 # Controlla se è un marker di sezione
                 if msg.type == 'marker' and msg.text in all_section_names:
+                    # Se è il primo marker, salva gli eventi precedenti come setup iniziali
+                    if not first_marker_found:
+                        first_marker_found = True
+                        # Gli eventi accumulati prima del primo marker sono setup events
+                        # Filtriamo per tenere solo program_change e control_change
+                        for event in section_events:
+                            if event.type in ['program_change', 'control_change']:
+                                self.initial_setup_events.append(event.copy())
+                        section_events = []  # Reset per la nuova sezione
+
                     # Salva la sezione precedente se esiste
-                    if current_section and section_events:
+                    elif current_section and section_events:
                         if current_section not in self.sections:
                             self.sections[current_section] = {
                                 'events': [],
@@ -120,8 +135,8 @@ class StylePlayer:
                     section_start_time = absolute_time
                     section_events = []
 
-                # Aggiungi evento alla sezione corrente
-                elif current_section:
+                # Aggiungi evento alla sezione corrente (o al buffer pre-primo-marker)
+                else:
                     # Crea una copia del messaggio con tempo relativo alla sezione
                     event_copy = msg.copy()
                     section_events.append(event_copy)
@@ -135,6 +150,15 @@ class StylePlayer:
                         'start_time': section_start_time
                     }
                 self.sections[current_section]['events'].extend(section_events)
+
+        # Debug: mostra quanti setup events sono stati trovati
+        print(f"Setup events trovati: {len(self.initial_setup_events)}")
+        if self.initial_setup_events:
+            print("Tipi di setup events:")
+            program_changes = [e for e in self.initial_setup_events if e.type == 'program_change']
+            control_changes = [e for e in self.initial_setup_events if e.type == 'control_change']
+            print(f"  - program_change: {len(program_changes)}")
+            print(f"  - control_change: {len(control_changes)}")
 
     def get_available_sections(self):
         """Ritorna lista delle sezioni disponibili nello style"""
@@ -221,6 +245,20 @@ class StylePlayer:
         self.current_tick_in_section = 0
         self.current_measure = 1
         self.current_beat = 1
+
+        # Invia gli eventi di setup iniziali (program_change e control_change)
+        # Questi sono gli eventi che nel file .sty si trovano prima del primo marker
+        print(f"Invio {len(self.initial_setup_events)} setup events...")
+        for setup_event in self.initial_setup_events:
+            if not self.playing:
+                break
+            try:
+                self.midi_output.send(setup_event)
+                # Debug dettagliato per i program_change
+                if setup_event.type == 'program_change':
+                    print(f"  program_change ch={setup_event.channel} prog={setup_event.program}")
+            except Exception as e:
+                print(f"Errore invio setup MIDI: {e}")
 
         while self.playing:
             # Riproduci gli eventi della sezione
